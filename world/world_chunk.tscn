@@ -1,0 +1,23 @@
+[gd_scene load_steps=2 format=3]
+
+[ext_resource type="Script" path="res://world/world_chunk.gd" id="1"]
+
+[node name="WorldChunk" type="Node3D"]
+script = ExtResource("1")
+
+[node name="Terrain" type="MeshInstance3D" parent="."]
+
+[node name="TerrainBody" type="StaticBody3D" parent="."]
+
+[node name="CollisionShape3D" type="CollisionShape3D" parent="TerrainBody"]
+
+[node name="Paths" type="Node3D" parent="."]
+
+[node name="Water" type="Node3D" parent="."]
+
+[node name="Props" type="Node3D" parent="."]
+
+[node name="NavigationRegion3D" type="NavigationRegion3D" parent="."]
+enabled = false
+
+[node name="DebugOverlay" type="Node3D" parent="."]

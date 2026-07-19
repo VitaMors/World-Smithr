@@ -1,0 +1,6 @@
+.godot/
+.import/
+build/web/
+*.tmp
+*.log
+*.translation
