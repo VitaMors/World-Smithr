@@ -49,33 +49,32 @@ The smoke test currently covers chunk coordinate conversion, terrain height stor
 - 1: angled perspective view.
 - 2: top orthographic view.
 
-## Export Web
+## Local Web Export
 
 Export with the preset named `Web`:
 
 ```powershell
-godot --headless --path . --export-release Web build/web/index.html
+godot --headless --path . --export-release Web dist/web/index.html
 ```
 
-Serve the generated `build/web` directory from a local or hosted web server. Browser storage is expected to use Godot's `user://` path backed by IndexedDB; later phases will add explicit persistence warnings, import, and export controls.
+Serve the generated `dist/web` directory from a local or hosted web server. Browser storage is expected to use Godot's `user://` path backed by IndexedDB; later phases will add explicit persistence warnings, import, and export controls.
 
 ## Deploy With GitHub Pages
 
-This repo includes `.github/workflows/pages.yml`, which deploys the checked-in Godot Web export in `build/web` to GitHub Pages using GitHub's official Pages artifact flow. If `build/web/index.html` is not present yet, the workflow exits successfully with a notice and skips deployment.
+This repo includes `.github/workflows/pages.yml`, which builds the Godot Web export in GitHub Actions and deploys the generated `dist/web` output to GitHub Pages. Do not commit a placeholder `index.html`; the workflow downloads Godot 4.7.1 and the matching export templates, exports the project, then publishes the real app.
 
-1. Export the Web build to `build/web/index.html`.
-2. Commit `build/web` together with the project files.
-3. Push to the `main` branch, or `master` if that is the repository default.
-4. In GitHub, open repository Settings > Pages, then set Build and deployment > Source to `GitHub Actions`.
-5. Run the `Deploy Godot Web to GitHub Pages` workflow, or let it run on push.
+1. Commit and push the project source files.
+2. In GitHub, open repository Settings > Pages, then set Build and deployment > Source to `GitHub Actions`.
+3. Open the Actions tab and run `Build and Deploy Godot Web`, or let it run on push to `main` or `master`.
+4. When the workflow is green, the Pages URL appears in the deployment summary and in Settings > Pages.
 
 References:
 
 - GitHub Pages publishing source: https://docs.github.com/en/pages/getting-started-with-github-pages/configuring-a-publishing-source-for-your-github-pages-site
 - GitHub Pages custom workflows: https://docs.github.com/en/pages/getting-started-with-github-pages/using-custom-workflows-with-github-pages
+- Godot command line export: https://docs.godotengine.org/en/stable/tutorials/editor/command_line_tutorial.html
+- Godot Web export: https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_web.html
 
 ## Next Phase
 
 Phase 2 should expand the single terrain chunk into a seam-safe 3x3 world with canonical shared border samples, cross-boundary brushes, chunk debug colours, and coordinate labels.
-
-

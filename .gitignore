@@ -1,8 +1,8 @@
 .godot/
 .import/
-build/*
-!build/web/
-!build/web/**
+build/
+dist/
+.godot-ci/
 *.tmp
 *.log
 *.translation

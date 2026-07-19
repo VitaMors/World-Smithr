@@ -1,11 +1,8 @@
-name: Deploy Godot Web to GitHub Pages
+name: Build and Deploy Godot Web
 
 on:
   push:
     branches: ["main", "master"]
-    paths:
-      - "build/web/**"
-      - ".github/workflows/pages.yml"
   workflow_dispatch:
 
 permissions:
@@ -17,38 +14,68 @@ concurrency:
   group: github-pages
   cancel-in-progress: false
 
+env:
+  GODOT_VERSION: 4.7.1
+  GODOT_RELEASE: stable
+  GODOT_BINARY: Godot_v4.7.1-stable_linux.x86_64
+  GODOT_TEMPLATES_DIR: /home/runner/.local/share/godot/export_templates/4.7.1.stable
+
 jobs:
-  deploy:
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
+  build:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v6
 
+      - name: Download Godot editor and export templates
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .godot-ci "$GODOT_TEMPLATES_DIR"
+          cd .godot-ci
+          curl -fL -o godot.zip "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_RELEASE}/${GODOT_BINARY}.zip"
+          curl -fL -o export_templates.tpz "https://github.com/godotengine/godot/releases/download/${GODOT_VERSION}-${GODOT_RELEASE}/Godot_v${GODOT_VERSION}-${GODOT_RELEASE}_export_templates.tpz"
+          unzip -q godot.zip
+          unzip -q export_templates.tpz -d export_templates
+          mv export_templates/templates/* "$GODOT_TEMPLATES_DIR"/
+          chmod +x "$GODOT_BINARY"
+
+      - name: Import project resources
+        shell: bash
+        run: |
+          set -euo pipefail
+          .godot-ci/$GODOT_BINARY --headless --path . --import
+
+      - name: Export Web build
+        shell: bash
+        run: |
+          set -euo pipefail
+          rm -rf dist/web
+          mkdir -p dist/web
+          .godot-ci/$GODOT_BINARY --headless --path . --export-release Web dist/web/index.html
+          test -f dist/web/index.html
+          test -f dist/web/index.wasm
+          test -f dist/web/index.pck
+          touch dist/web/.nojekyll
+
       - name: Configure GitHub Pages
         uses: actions/configure-pages@v5
 
-      - name: Check for Godot Web export
-        id: export
-        shell: bash
-        run: |
-          if test -f build/web/index.html; then
-            echo "present=true" >> "$GITHUB_OUTPUT"
-          else
-            echo "present=false" >> "$GITHUB_OUTPUT"
-            echo "::notice::Missing build/web/index.html. Export the Godot Web preset to build/web before deploying."
-          fi
-
       - name: Upload GitHub Pages artifact
-        if: steps.export.outputs.present == 'true'
         uses: actions/upload-pages-artifact@v4
         with:
-          path: build/web
+          path: dist/web
+          include-hidden-files: true
 
+  deploy:
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    runs-on: ubuntu-latest
+    needs: build
+    steps:
       - name: Deploy to GitHub Pages
-        if: steps.export.outputs.present == 'true'
         id: deployment
         uses: actions/deploy-pages@v4
+
 
