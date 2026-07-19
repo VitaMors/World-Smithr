@@ -1,6 +1,13 @@
 extends Control
 class_name EditorShell
 
+signal action_requested(action_name: String)
+signal tool_selected(tool_name: String)
+signal sculpt_mode_selected(mode_name: String)
+signal brush_radius_changed(value: float)
+signal brush_strength_changed(value: float)
+signal brush_falloff_selected(falloff_name: String)
+
 const PRODUCT_NAME := "World Smithr"
 
 var _status_label: Label
@@ -8,6 +15,12 @@ var _chunk_label: Label
 var _autosave_label: Label
 var _fps_label: Label
 var _object_count_label: Label
+var _tool_value_label: Label
+var _selection_value_label: Label
+var _radius_value_label: Label
+var _strength_value_label: Label
+var _falloff_options: OptionButton
+var _mode_options: OptionButton
 var _tool_buttons: Dictionary = {}
 
 
@@ -31,6 +44,30 @@ func set_status(message: String, chunk: Vector2i, autosave_state: String, object
 		_autosave_label.text = "Autosave %s" % autosave_state
 	if _object_count_label != null:
 		_object_count_label.text = "Objects %d" % object_count
+
+
+func set_active_tool(tool_name: String) -> void:
+	for key in _tool_buttons.keys():
+		var button := _tool_buttons[key] as Button
+		button.button_pressed = key == tool_name
+	if _tool_value_label != null:
+		_tool_value_label.text = "Tool: %s" % tool_name
+
+
+func set_selection_summary(summary: String) -> void:
+	if _selection_value_label != null:
+		_selection_value_label.text = "Selection: %s" % summary
+
+
+func set_sculpt_settings(mode_name: String, radius_m: float, strength_percent: float, falloff_name: String) -> void:
+	if _mode_options != null:
+		_select_option_by_text(_mode_options, mode_name)
+	if _radius_value_label != null:
+		_radius_value_label.text = "Brush radius: %d m" % roundi(radius_m)
+	if _strength_value_label != null:
+		_strength_value_label.text = "Strength: %d%%" % roundi(strength_percent)
+	if _falloff_options != null:
+		_select_option_by_text(_falloff_options, falloff_name)
 
 
 func _build_shell() -> void:
@@ -91,7 +128,7 @@ func _build_left_rail() -> void:
 		_tool_buttons[tool_name] = button
 		column.add_child(button)
 
-	(_tool_buttons["Select"] as Button).button_pressed = true
+	set_active_tool("Select")
 
 
 func _build_right_panel() -> void:
@@ -99,7 +136,7 @@ func _build_right_panel() -> void:
 	panel.anchor_left = 1.0
 	panel.anchor_right = 1.0
 	panel.anchor_bottom = 1.0
-	panel.offset_left = -276.0
+	panel.offset_left = -286.0
 	panel.offset_top = 54.0
 	panel.offset_bottom = -34.0
 
@@ -117,12 +154,46 @@ func _build_right_panel() -> void:
 
 	column.add_child(_make_separator(false))
 	column.add_child(_make_small_label("Mode: Build"))
-	column.add_child(_make_small_label("Tool: Select"))
-	column.add_child(_make_small_label("Selection: None"))
+	_tool_value_label = _make_small_label("Tool: Select")
+	column.add_child(_tool_value_label)
+	_selection_value_label = _make_small_label("Selection: None")
+	column.add_child(_selection_value_label)
 	column.add_child(_make_separator(false))
-	column.add_child(_make_small_label("Brush radius: 8 m"))
-	column.add_child(_make_small_label("Strength: 50%"))
-	column.add_child(_make_small_label("Falloff: Smooth"))
+
+	column.add_child(_make_small_label("Sculpt mode"))
+	_mode_options = OptionButton.new()
+	for mode_name in ["Raise", "Lower", "Smooth", "Flatten"]:
+		_mode_options.add_item(mode_name)
+	_mode_options.item_selected.connect(_on_sculpt_mode_item_selected)
+	column.add_child(_mode_options)
+
+	_radius_value_label = _make_small_label("Brush radius: 8 m")
+	column.add_child(_radius_value_label)
+	var radius_slider := HSlider.new()
+	radius_slider.min_value = 2.0
+	radius_slider.max_value = 24.0
+	radius_slider.step = 1.0
+	radius_slider.value = 8.0
+	radius_slider.value_changed.connect(_on_radius_changed)
+	column.add_child(radius_slider)
+
+	_strength_value_label = _make_small_label("Strength: 50%")
+	column.add_child(_strength_value_label)
+	var strength_slider := HSlider.new()
+	strength_slider.min_value = 0.0
+	strength_slider.max_value = 100.0
+	strength_slider.step = 1.0
+	strength_slider.value = 50.0
+	strength_slider.value_changed.connect(_on_strength_changed)
+	column.add_child(strength_slider)
+
+	column.add_child(_make_small_label("Falloff"))
+	_falloff_options = OptionButton.new()
+	for falloff_name in ["Hard", "Linear", "Smooth"]:
+		_falloff_options.add_item(falloff_name)
+	_select_option_by_text(_falloff_options, "Smooth")
+	_falloff_options.item_selected.connect(_on_falloff_item_selected)
+	column.add_child(_falloff_options)
 
 
 func _build_bottom_bar() -> void:
@@ -211,13 +282,41 @@ func _make_separator(vertical: bool) -> Control:
 	return separator
 
 
+func _select_option_by_text(options: OptionButton, text: String) -> void:
+	for index in range(options.get_item_count()):
+		if options.get_item_text(index) == text:
+			options.select(index)
+			return
+
+
 func _on_action_pressed(action_name: String) -> void:
-	set_status("%s is queued for a later phase" % action_name, Vector2i.ZERO, "Idle", 0)
+	action_requested.emit(action_name)
+	if action_name != "Undo" and action_name != "Redo":
+		set_status("%s is queued for a later phase" % action_name, Vector2i.ZERO, "Idle", 0)
 
 
 func _on_tool_pressed(tool_name: String) -> void:
-	for key in _tool_buttons.keys():
-		var button := _tool_buttons[key] as Button
-		button.button_pressed = key == tool_name
-
+	set_active_tool(tool_name)
+	tool_selected.emit(tool_name)
 	set_status("%s tool selected" % tool_name, Vector2i.ZERO, "Idle", 0)
+
+
+func _on_sculpt_mode_item_selected(index: int) -> void:
+	var mode_name := _mode_options.get_item_text(index)
+	sculpt_mode_selected.emit(mode_name)
+
+
+func _on_radius_changed(value: float) -> void:
+	_radius_value_label.text = "Brush radius: %d m" % roundi(value)
+	brush_radius_changed.emit(value)
+
+
+func _on_strength_changed(value: float) -> void:
+	_strength_value_label.text = "Strength: %d%%" % roundi(value)
+	brush_strength_changed.emit(value)
+
+
+func _on_falloff_item_selected(index: int) -> void:
+	brush_falloff_selected.emit(_falloff_options.get_item_text(index))
+
+

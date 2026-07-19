@@ -28,7 +28,7 @@ func set_focus_chunk(coord: Vector2i) -> void:
 	focus_chunk_changed.emit(focus_chunk)
 
 
-func get_state_for_chunk(coord: Vector2i) -> ChunkState:
+func get_state_for_chunk(coord: Vector2i) -> int:
 	var distance := ChunkCoordinates.chebyshev_distance(coord, focus_chunk)
 	if distance <= 1:
 		return ChunkState.ACTIVE
