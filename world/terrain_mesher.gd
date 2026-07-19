@@ -1,6 +1,10 @@
 extends Node
 class_name TerrainMesher
 
+const INVALID_REBUILD_COORD := Vector2i(2147483647, 2147483647)
+
+@export var max_rebuilds_per_frame := 1
+
 var pending_rebuilds: Array[Vector2i] = []
 var terrain_material: Material
 
@@ -15,11 +19,24 @@ func queue_rebuild(coord: Vector2i) -> void:
 		pending_rebuilds.append(coord)
 
 
+func queue_rebuilds(coords: Array[Vector2i]) -> void:
+	for coord in coords:
+		queue_rebuild(coord)
+
+
 func take_next_rebuild() -> Vector2i:
 	if pending_rebuilds.is_empty():
-		return Vector2i(2147483647, 2147483647)
+		return INVALID_REBUILD_COORD
 
 	return pending_rebuilds.pop_front()
+
+
+func has_pending_rebuilds() -> bool:
+	return not pending_rebuilds.is_empty()
+
+
+func pending_rebuild_count() -> int:
+	return pending_rebuilds.size()
 
 
 func build_mesh(chunk_data: ChunkData) -> ArrayMesh:
@@ -80,10 +97,10 @@ func build_mesh(chunk_data: ChunkData) -> ArrayMesh:
 
 
 func _calculate_normal(chunk_data: ChunkData, sample_x: int, sample_z: int) -> Vector3:
-	var west := chunk_data.get_height(maxi(sample_x - 1, 0), sample_z)
-	var east := chunk_data.get_height(mini(sample_x + 1, ChunkCoordinates.TERRAIN_CELLS), sample_z)
-	var north := chunk_data.get_height(sample_x, maxi(sample_z - 1, 0))
-	var south := chunk_data.get_height(sample_x, mini(sample_z + 1, ChunkCoordinates.TERRAIN_CELLS))
+	var west := chunk_data.get_height_at_sample_offset(sample_x, sample_z, -1, 0)
+	var east := chunk_data.get_height_at_sample_offset(sample_x, sample_z, 1, 0)
+	var north := chunk_data.get_height_at_sample_offset(sample_x, sample_z, 0, -1)
+	var south := chunk_data.get_height_at_sample_offset(sample_x, sample_z, 0, 1)
 	return Vector3(west - east, 2.0 * ChunkCoordinates.CELL_SIZE_M, north - south).normalized()
 
 

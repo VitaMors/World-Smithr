@@ -3,28 +3,39 @@ class_name Main
 
 const PRODUCT_NAME := "World Smithr"
 const TERRAIN_RAY_LENGTH_M := 512.0
+const WORLD_CHUNK_SCENE := preload("res://world/world_chunk.tscn")
 
 @onready var _editor_shell: EditorShell = $UI/EditorShell
 @onready var _services: Node = $Services
+@onready var _editor_camera_rig: EditorCameraRig = $EditorCameraRig
 @onready var _camera: Camera3D = $EditorCameraRig/Pivot/Camera3D
-@onready var _world_chunk: WorldChunk = $WorldRoot/ChunkContainer/StarterChunk
+@onready var _chunk_container: Node3D = $WorldRoot/ChunkContainer
+@onready var _chunk_streamer: ChunkStreamer = $Services/ChunkStreamer
 @onready var _terrain_mesher: TerrainMesher = $Services/TerrainMesher
 @onready var _command_history: CommandHistory = $Services/CommandHistory
 @onready var _autosave_service: AutosaveService = $Services/AutosaveService
 
-var _chunk_data: ChunkData
+var _world_document: WorldDocument
+var _chunks_by_key: Dictionary = {}
 var _sculpt_tool: SculptTool
 var _active_tool := "Select"
 var _is_sculpting := false
+var _focus_chunk := Vector2i.ZERO
 var _last_terrain_hit := Vector3(32.0, 0.0, 32.0)
 
 
 func _ready() -> void:
 	DisplayServer.window_set_title(PRODUCT_NAME)
+	set_process(true)
 	_initialize_services()
-	_setup_phase_one_chunk()
+	_setup_phase_three_streaming()
 	_connect_editor_shell()
-	_editor_shell.set_status("Phase 1 terrain ready", Vector2i.ZERO, "Idle", 0)
+	_editor_shell.set_status("Phase 3 streaming 5x5 ready", _focus_chunk, "Idle", _chunks_by_key.size())
+
+
+func _process(_delta: float) -> void:
+	_update_streaming_focus()
+	_process_rebuild_queue()
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -40,17 +51,21 @@ func _initialize_services() -> void:
 			child.call("initialize", self)
 
 
-func _setup_phase_one_chunk() -> void:
-	_chunk_data = ChunkData.new(Vector2i.ZERO)
-	_world_chunk.configure(_chunk_data, _terrain_mesher)
-	_world_chunk.set_runtime_state(WorldChunk.RuntimeState.ACTIVE)
+func _setup_phase_three_streaming() -> void:
+	_world_document = WorldDocument.new()
+	_chunks_by_key.clear()
+	for child in _chunk_container.get_children():
+		child.queue_free()
 
 	_sculpt_tool = SculptTool.new()
-	_sculpt_tool.configure(_chunk_data, _world_chunk)
+	_sculpt_tool.configure(_world_document, _chunks_by_key)
 	_sculpt_tool.set_mode_from_name("Raise")
 	_sculpt_tool.set_falloff_from_name("Smooth")
 	_sculpt_tool.radius_m = 8.0
 	_sculpt_tool.strength_percent = 50.0
+
+	var initial_diff := _chunk_streamer.set_focus_chunk(_focus_chunk, true)
+	_apply_streaming_diff(initial_diff)
 
 
 func _connect_editor_shell() -> void:
@@ -62,6 +77,111 @@ func _connect_editor_shell() -> void:
 	_editor_shell.brush_falloff_selected.connect(_on_brush_falloff_selected)
 	_editor_shell.set_active_tool(_active_tool)
 	_editor_shell.set_sculpt_settings("Raise", _sculpt_tool.radius_m, _sculpt_tool.strength_percent, "Smooth")
+
+
+func _update_streaming_focus() -> void:
+	var next_focus := ChunkCoordinates.world_to_chunk(_editor_camera_rig.global_position)
+	if next_focus == _focus_chunk:
+		return
+
+	_focus_chunk = next_focus
+	var diff := _chunk_streamer.set_focus_chunk(_focus_chunk)
+	_apply_streaming_diff(diff)
+	_editor_shell.set_status("Streaming focus changed", _focus_chunk, "Idle", _chunks_by_key.size())
+
+
+func _apply_streaming_diff(diff: Dictionary) -> void:
+	for coord in diff["entered_loaded"]:
+		var state := _chunk_streamer.get_state_for_chunk(coord)
+		var build_now := state == ChunkStreamer.ChunkState.ACTIVE
+		_ensure_chunk(coord, state, build_now)
+
+	for coord in _chunk_streamer.loaded_chunks:
+		var state := _chunk_streamer.get_state_for_chunk(coord)
+		var chunk := _ensure_chunk(coord, state, false)
+		chunk.set_runtime_state(state)
+		if not chunk.has_mesh():
+			if state == ChunkStreamer.ChunkState.ACTIVE:
+				if chunk.is_node_ready():
+					chunk.rebuild_terrain(true)
+				else:
+					chunk.build_on_ready = true
+			else:
+				_queue_chunk_rebuild(coord)
+		elif state == ChunkStreamer.ChunkState.ACTIVE and not chunk.has_collision():
+			_queue_chunk_rebuild(coord)
+		elif state == ChunkStreamer.ChunkState.WARM and chunk.has_collision():
+			_queue_chunk_rebuild(coord)
+
+	for coord in diff["exited_loaded"]:
+		_unload_chunk(coord)
+
+	_sculpt_tool.set_chunks(_chunks_by_key)
+
+
+func _ensure_chunk(coord: Vector2i, state: int, build_now: bool) -> WorldChunk:
+	var key := ChunkCoordinates.chunk_to_key(coord)
+	if _chunks_by_key.has(key):
+		return _chunks_by_key[key] as WorldChunk
+
+	var chunk := WORLD_CHUNK_SCENE.instantiate() as WorldChunk
+	chunk.configure(_world_document.get_chunk_data(coord), _terrain_mesher, build_now)
+	chunk.set_runtime_state(state)
+	chunk.set_debug_visible(true)
+	_chunk_container.add_child(chunk)
+	_chunks_by_key[key] = chunk
+	return chunk
+
+
+func _unload_chunk(coord: Vector2i) -> void:
+	var key := ChunkCoordinates.chunk_to_key(coord)
+	if not _chunks_by_key.has(key):
+		return
+
+	var chunk := _chunks_by_key[key] as WorldChunk
+	chunk.set_runtime_state(WorldChunk.RuntimeState.UNLOADED)
+	chunk.queue_free()
+	_chunks_by_key.erase(key)
+
+
+func _queue_chunk_rebuild(coord: Vector2i) -> void:
+	if _chunks_by_key.has(ChunkCoordinates.chunk_to_key(coord)):
+		_terrain_mesher.queue_rebuild(coord)
+
+
+func _queue_chunk_rebuilds(coords: Array[Vector2i]) -> void:
+	for coord in coords:
+		_queue_chunk_rebuild(coord)
+
+
+func _process_rebuild_queue() -> void:
+	var rebuilt := 0
+	for _i in range(_terrain_mesher.max_rebuilds_per_frame):
+		var coord := _terrain_mesher.take_next_rebuild()
+		if coord == TerrainMesher.INVALID_REBUILD_COORD:
+			break
+
+		var key := ChunkCoordinates.chunk_to_key(coord)
+		if not _chunks_by_key.has(key):
+			continue
+
+		var chunk := _chunks_by_key[key] as WorldChunk
+		if not chunk.is_node_ready():
+			_queue_chunk_rebuild(coord)
+			continue
+		if chunk.runtime_state == WorldChunk.RuntimeState.UNLOADED:
+			continue
+
+		chunk.rebuild_terrain(chunk.runtime_state == WorldChunk.RuntimeState.ACTIVE)
+		rebuilt += 1
+
+	if rebuilt > 0:
+		_editor_shell.set_status(
+			"Rebuilt %d chunk mesh" % rebuilt,
+			_focus_chunk,
+			"Dirty" if _is_sculpting else "Idle",
+			_chunks_by_key.size()
+		)
 
 
 func _handle_mouse_button(event: InputEventMouseButton) -> void:
@@ -101,20 +221,21 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 func _stamp_sculpt(world_position: Vector3, invert_raise_lower: bool) -> void:
 	if _sculpt_tool.apply_at(world_position, invert_raise_lower):
 		_last_terrain_hit = world_position
-		_world_chunk.rebuild_terrain(true)
-		_editor_shell.set_status("Sculpting terrain", Vector2i.ZERO, "Dirty", 0)
+		_queue_chunk_rebuilds(_sculpt_tool.get_current_affected_coords())
+		_process_rebuild_queue()
+		_editor_shell.set_status("Sculpting terrain", ChunkCoordinates.world_to_chunk(world_position), "Dirty", _chunks_by_key.size())
 
 
 func _finish_sculpt_stroke() -> void:
 	_is_sculpting = false
 	var command := _sculpt_tool.end_stroke()
 	if command == null:
-		_editor_shell.set_status("Sculpt stroke had no terrain changes", Vector2i.ZERO, "Idle", 0)
+		_editor_shell.set_status("Sculpt stroke had no terrain changes", _focus_chunk, "Idle", _chunks_by_key.size())
 		return
 
-	_command_history.execute_command(command)
+	_command_history.record_executed_command(command)
 	_autosave_service.mark_dirty()
-	_editor_shell.set_status("Sculpt stroke committed", Vector2i.ZERO, "Dirty", 0)
+	_editor_shell.set_status("Sculpt stroke committed", _focus_chunk, "Dirty", _chunks_by_key.size())
 
 
 func _pick_terrain(screen_position: Vector2) -> Dictionary:
@@ -130,26 +251,26 @@ func _pick_terrain(screen_position: Vector2) -> Dictionary:
 
 
 func _pick_terrain_math_fallback(origin: Vector3, end: Vector3) -> Dictionary:
-	var local_origin := _world_chunk.to_local(origin)
-	var local_end := _world_chunk.to_local(end)
-	var local_direction := local_end - local_origin
-	if is_zero_approx(local_direction.y):
+	var direction := end - origin
+	if is_zero_approx(direction.y):
 		return {}
 
-	var t := -local_origin.y / local_direction.y
+	var t := -origin.y / direction.y
 	if t < 0.0 or t > 1.0:
 		return {}
 
-	var local_hit := local_origin + local_direction * t
-	if local_hit.x < 0.0 or local_hit.z < 0.0:
-		return {}
-	if local_hit.x > ChunkCoordinates.CHUNK_SIZE_M or local_hit.z > ChunkCoordinates.CHUNK_SIZE_M:
+	var world_hit := origin + direction * t
+	if not _is_world_position_in_active_chunks(world_hit):
 		return {}
 
-	local_hit.y = _chunk_data.get_height_at_local(local_hit)
-	var world_hit := _world_chunk.to_global(local_hit)
+	world_hit.y = _world_document.get_height_at_world(world_hit)
 	_last_terrain_hit = world_hit
-	return {"position": world_hit, "collider": _world_chunk}
+	return {"position": world_hit}
+
+
+func _is_world_position_in_active_chunks(world_position: Vector3) -> bool:
+	var coord := ChunkCoordinates.world_to_chunk(world_position)
+	return _chunk_streamer.is_active(coord)
 
 
 func _on_action_requested(action_name: String) -> void:
@@ -158,16 +279,16 @@ func _on_action_requested(action_name: String) -> void:
 			if _command_history.can_undo():
 				_command_history.undo()
 				_autosave_service.mark_dirty()
-				_editor_shell.set_status("Undo terrain stroke", Vector2i.ZERO, "Dirty", 0)
+				_editor_shell.set_status("Undo terrain stroke", _focus_chunk, "Dirty", _chunks_by_key.size())
 			else:
-				_editor_shell.set_status("Nothing to undo", Vector2i.ZERO, "Idle", 0)
+				_editor_shell.set_status("Nothing to undo", _focus_chunk, "Idle", _chunks_by_key.size())
 		"Redo":
 			if _command_history.can_redo():
 				_command_history.redo()
 				_autosave_service.mark_dirty()
-				_editor_shell.set_status("Redo terrain stroke", Vector2i.ZERO, "Dirty", 0)
+				_editor_shell.set_status("Redo terrain stroke", _focus_chunk, "Dirty", _chunks_by_key.size())
 			else:
-				_editor_shell.set_status("Nothing to redo", Vector2i.ZERO, "Idle", 0)
+				_editor_shell.set_status("Nothing to redo", _focus_chunk, "Idle", _chunks_by_key.size())
 
 
 func _on_tool_selected(tool_name: String) -> void:
@@ -176,7 +297,7 @@ func _on_tool_selected(tool_name: String) -> void:
 
 func _on_sculpt_mode_selected(mode_name: String) -> void:
 	_sculpt_tool.set_mode_from_name(mode_name)
-	_editor_shell.set_status("Sculpt mode: %s" % mode_name, Vector2i.ZERO, "Idle", 0)
+	_editor_shell.set_status("Sculpt mode: %s" % mode_name, _focus_chunk, "Idle", _chunks_by_key.size())
 
 
 func _on_brush_radius_changed(value: float) -> void:
@@ -189,3 +310,6 @@ func _on_brush_strength_changed(value: float) -> void:
 
 func _on_brush_falloff_selected(falloff_name: String) -> void:
 	_sculpt_tool.set_falloff_from_name(falloff_name)
+
+
+

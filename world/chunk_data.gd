@@ -8,12 +8,19 @@ var coord := Vector2i.ZERO
 var revision := 0
 var dirty := false
 var heights := PackedFloat32Array()
+var world_document: WorldDocument
 
 
-func _init(p_coord := Vector2i.ZERO) -> void:
+func _init(p_coord := Vector2i.ZERO, p_world_document: WorldDocument = null) -> void:
 	coord = p_coord
-	heights.resize(sample_count())
-	reset_flat(0.0)
+	world_document = p_world_document
+	if world_document == null:
+		heights.resize(sample_count())
+		reset_flat(0.0)
+	else:
+		heights.resize(0)
+		dirty = false
+		revision = 0
 
 
 static func sample_count() -> int:
@@ -34,31 +41,41 @@ static func sample_z_from_index(sample_index: int) -> int:
 
 func reset_flat(height_m: float) -> void:
 	var clamped_height := clampf(height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
-	for i in range(heights.size()):
-		heights[i] = clamped_height
+	for i in range(sample_count()):
+		set_height_by_index(i, clamped_height)
 	mark_dirty()
 
 
 func get_height(sample_x: int, sample_z: int) -> float:
+	if world_document != null:
+		return world_document.get_height_at_global_sample(to_global_sample(sample_x, sample_z))
 	return heights[index(sample_x, sample_z)]
 
 
 func set_height(sample_x: int, sample_z: int, height_m: float) -> void:
+	if world_document != null:
+		world_document.set_height_at_global_sample(to_global_sample(sample_x, sample_z), height_m)
+		mark_dirty()
+		return
+
 	heights[index(sample_x, sample_z)] = clampf(height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
 	mark_dirty()
 
 
 func get_height_by_index(sample_index: int) -> float:
-	return heights[sample_index]
+	return get_height(sample_x_from_index(sample_index), sample_z_from_index(sample_index))
 
 
 func set_height_by_index(sample_index: int, height_m: float) -> void:
-	heights[sample_index] = clampf(height_m, MIN_HEIGHT_M, MAX_HEIGHT_M)
-	mark_dirty()
+	set_height(sample_x_from_index(sample_index), sample_z_from_index(sample_index), height_m)
 
 
 func duplicate_heights() -> PackedFloat32Array:
-	return heights.duplicate()
+	var values := PackedFloat32Array()
+	values.resize(sample_count())
+	for i in range(sample_count()):
+		values[i] = get_height_by_index(i)
+	return values
 
 
 func get_height_at_local(local_position: Vector3) -> float:
@@ -81,6 +98,9 @@ func get_height_at_local(local_position: Vector3) -> float:
 
 
 func get_average_height(sample_x: int, sample_z: int) -> float:
+	if world_document != null:
+		return world_document.get_average_height_at_global_sample(to_global_sample(sample_x, sample_z))
+
 	var total := 0.0
 	var count := 0
 	for z in range(maxi(sample_z - 1, 0), mini(sample_z + 2, ChunkCoordinates.HEIGHT_SAMPLES)):
@@ -91,6 +111,21 @@ func get_average_height(sample_x: int, sample_z: int) -> float:
 	if count == 0:
 		return get_height(sample_x, sample_z)
 	return total / float(count)
+
+
+func get_height_at_sample_offset(sample_x: int, sample_z: int, offset_x: int, offset_z: int) -> float:
+	if world_document != null:
+		var global_sample := to_global_sample(sample_x, sample_z) + Vector2i(offset_x, offset_z)
+		return world_document.get_height_at_global_sample(global_sample)
+
+	return get_height(
+		mini(maxi(sample_x + offset_x, 0), ChunkCoordinates.TERRAIN_CELLS),
+		mini(maxi(sample_z + offset_z, 0), ChunkCoordinates.TERRAIN_CELLS)
+	)
+
+
+func to_global_sample(sample_x: int, sample_z: int) -> Vector2i:
+	return ChunkCoordinates.chunk_sample_to_global(coord, sample_x, sample_z)
 
 
 func mark_dirty() -> void:

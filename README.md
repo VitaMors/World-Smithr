@@ -2,7 +2,7 @@
 
 World Smithr is a Godot 4 Web-first, low-poly 3D world-map editor. The starting blueprint used the working name "WorldSmith"; this project uses **World Smithr** for the product name and `world_smithr` for new save-format identifiers.
 
-This repository currently contains Phase 1 from the blueprint: a runnable Godot project shell, editor-style layout, orbit/pan/zoom camera rig, service placeholders, one generated editable terrain chunk, terrain collision/ray picking, Raise/Lower/Smooth/Flatten sculpting, and one-stroke undo/redo.
+This repository currently contains Phase 3 from the blueprint: a runnable Godot project shell, editor-style layout, orbit/pan/zoom camera rig, a seam-safe editable terrain system, a 5x5 streamed chunk window, Active/Warm/Unloaded chunk states, canonical global height samples shared across chunk borders, cross-boundary Raise/Lower/Smooth/Flatten sculpting, debug chunk colours/labels, and one-stroke undo/redo across affected chunks.
 
 ## Requirements
 
@@ -32,22 +32,32 @@ res://main/main.tscn
 godot --headless --path . --script res://tests/smoke_test.gd
 ```
 
-The smoke test currently covers chunk coordinate conversion, terrain height storage, terrain mesh generation, and the Phase 0 streaming-window bookkeeping.
+The smoke test currently covers chunk coordinate conversion, canonical shared border samples, four-chunk corner ownership, terrain height storage, terrain mesh generation, 5x5 streaming counts, cardinal/diagonal chunk-set diffs, negative chunk coordinates, and rebuild queue de-duping.
 
-## Phase 1 Controls
+## Phase 3 Controls
 
 - Select `Sculpt` in the left rail.
-- Left mouse drag on terrain: apply the selected sculpt brush.
+- Left mouse drag on active terrain: apply the selected sculpt brush.
+- Sculpt across chunk edges or four-way corners: shared global samples update all affected chunk meshes.
 - Sculpt modes: Raise, Lower, Smooth, Flatten.
 - Shift while dragging Raise or Lower: temporarily invert the direction.
 - Brush radius, strength, and falloff are in the right panel.
-- Top bar `Undo` and `Redo`: replay whole sculpt strokes.
+- Top bar `Undo` and `Redo`: replay whole sculpt strokes, including multi-chunk strokes.
 - Middle mouse drag: orbit.
-- Shift + middle mouse drag: pan.
+- Shift + middle mouse drag: pan. The editor camera pivot is the Build-mode streaming focus.
 - Mouse wheel: zoom.
 - F: frame the starter chunk.
 - 1: angled perspective view.
 - 2: top orthographic view.
+
+## Streaming Model
+
+- Active chunks: Chebyshev distance 0-1 from the focus, 9 chunks maximum, visible and collision-enabled.
+- Warm chunks: Chebyshev distance 2 from the focus, 16 chunks maximum, visible and collision-disabled.
+- Loaded chunks: the full 5x5 neighbourhood, 25 chunks maximum.
+- Unloaded chunks: distance 3+, no scene nodes.
+- Focus changes are diffed, so crossings create/promote/demote/unload only the changed coordinates.
+- Terrain mesh rebuilds are queued and processed with a small per-frame budget.
 
 ## Local Web Export
 
@@ -77,4 +87,4 @@ References:
 
 ## Next Phase
 
-Phase 2 should expand the single terrain chunk into a seam-safe 3x3 world with canonical shared border samples, cross-boundary brushes, chunk debug colours, and coordinate labels.
+Phase 4 should add save/open/import/export: versioned world manifests, independent chunk records, delayed autosave, recovery snapshots, portable ZIP import/export, and persistence warnings.

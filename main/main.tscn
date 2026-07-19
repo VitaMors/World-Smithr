@@ -11,7 +11,6 @@
 [ext_resource type="Script" path="res://commands/command_history.gd" id="9"]
 [ext_resource type="Script" path="res://persistence/autosave_service.gd" id="10"]
 [ext_resource type="Script" path="res://persistence/import_export_service.gd" id="11"]
-[ext_resource type="PackedScene" path="res://world/world_chunk.tscn" id="12"]
 
 [sub_resource type="Environment" id="Environment_editor"]
 background_mode = 1
@@ -25,8 +24,6 @@ script = ExtResource("1")
 [node name="WorldRoot" type="Node3D" parent="."]
 
 [node name="ChunkContainer" type="Node3D" parent="WorldRoot"]
-
-[node name="StarterChunk" parent="WorldRoot/ChunkContainer" instance=ExtResource("12")]
 
 [node name="HorizonSystem" type="Node3D" parent="WorldRoot"]
 script = ExtResource("4")

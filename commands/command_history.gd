@@ -15,6 +15,10 @@ func initialize(_main: Node) -> void:
 
 func execute_command(command: EditCommand) -> void:
 	command.execute()
+	record_executed_command(command)
+
+
+func record_executed_command(command: EditCommand) -> void:
 	_undo_stack.append(command)
 	_estimated_bytes += command.estimated_bytes()
 	_redo_stack.clear()

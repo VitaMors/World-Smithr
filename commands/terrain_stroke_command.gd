@@ -1,23 +1,26 @@
 extends EditCommand
 class_name TerrainStrokeCommand
 
-var chunk_data: ChunkData
-var world_chunk: WorldChunk
-var changed_indices := PackedInt32Array()
+var world_document: WorldDocument
+var chunks_by_key: Dictionary
+var sample_keys := PackedStringArray()
+var affected_chunk_keys := PackedStringArray()
 var before_heights := PackedFloat32Array()
 var after_heights := PackedFloat32Array()
 
 
 func _init(
-	p_chunk_data: ChunkData,
-	p_world_chunk: WorldChunk,
-	p_changed_indices: PackedInt32Array,
+	p_world_document: WorldDocument,
+	p_chunks_by_key: Dictionary,
+	p_sample_keys: PackedStringArray,
+	p_affected_chunk_keys: PackedStringArray,
 	p_before_heights: PackedFloat32Array,
 	p_after_heights: PackedFloat32Array
 ) -> void:
-	chunk_data = p_chunk_data
-	world_chunk = p_world_chunk
-	changed_indices = p_changed_indices.duplicate()
+	world_document = p_world_document
+	chunks_by_key = p_chunks_by_key
+	sample_keys = p_sample_keys.duplicate()
+	affected_chunk_keys = p_affected_chunk_keys.duplicate()
 	before_heights = p_before_heights.duplicate()
 	after_heights = p_after_heights.duplicate()
 
@@ -31,10 +34,18 @@ func undo() -> void:
 
 
 func estimated_bytes() -> int:
-	return changed_indices.size() * 12
+	return sample_keys.size() * 20
 
 
 func _apply(values: PackedFloat32Array) -> void:
-	for i in range(changed_indices.size()):
-		chunk_data.set_height_by_index(changed_indices[i], values[i])
-	world_chunk.rebuild_terrain(true)
+	for i in range(sample_keys.size()):
+		world_document.set_height_at_sample_key(sample_keys[i], values[i])
+	_rebuild_affected_chunks()
+
+
+func _rebuild_affected_chunks() -> void:
+	for chunk_key in affected_chunk_keys:
+		if not chunks_by_key.has(chunk_key):
+			continue
+		var chunk := chunks_by_key[chunk_key] as WorldChunk
+		chunk.rebuild_terrain(true)
