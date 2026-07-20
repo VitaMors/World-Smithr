@@ -10,7 +10,7 @@ class_name EditorCameraRig
 @onready var _pivot: Node3D = $Pivot
 @onready var _camera: Camera3D = $Pivot/Camera3D
 
-var _distance := 96.0
+var _distance := 120.0
 var _yaw := deg_to_rad(45.0)
 var _pitch := deg_to_rad(-55.0)
 var _orbiting := false
@@ -18,7 +18,7 @@ var _panning := false
 
 
 func _ready() -> void:
-	_camera.far = 320.0
+	_camera.far = 420.0
 	_apply_camera_transform()
 
 
@@ -32,8 +32,8 @@ func _unhandled_input(event: InputEvent) -> void:
 
 
 func frame_origin() -> void:
-	global_position = Vector3(32.0, 0.0, 32.0)
-	_distance = clampf(96.0, min_distance, max_distance)
+	global_position = Vector3(64.0, 0.0, 64.0)
+	_distance = clampf(120.0, min_distance, max_distance)
 	_apply_camera_transform()
 
 
@@ -41,13 +41,13 @@ func set_perspective_view() -> void:
 	_camera.projection = Camera3D.PROJECTION_PERSPECTIVE
 	_yaw = deg_to_rad(45.0)
 	_pitch = deg_to_rad(-55.0)
-	_distance = clampf(96.0, min_distance, max_distance)
+	_distance = clampf(120.0, min_distance, max_distance)
 	_apply_camera_transform()
 
 
 func set_top_view() -> void:
 	_camera.projection = Camera3D.PROJECTION_ORTHOGONAL
-	_camera.size = 128.0
+	_camera.size = 150.0
 	_yaw = 0.0
 	_pitch = deg_to_rad(-89.0)
 	_distance = clampf(120.0, min_distance, max_distance)

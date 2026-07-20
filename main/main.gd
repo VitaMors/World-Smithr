@@ -2,50 +2,60 @@ extends Node
 class_name Main
 
 const PRODUCT_NAME := "World Smithr"
+const TERRAIN_SIZE_M := 128.0
+const TERRAIN_CELLS := 64
+const TERRAIN_SAMPLES := TERRAIN_CELLS + 1
+const CELL_SIZE_M := TERRAIN_SIZE_M / float(TERRAIN_CELLS)
 const TERRAIN_RAY_LENGTH_M := 512.0
-const TERRAIN_COLLISION_MASK := 1
+const TERRAIN_COLLISION_LAYER := 1
 const PROP_COLLISION_LAYER := 2
 const QUICK_SAVE_PATH := "user://worlds/world_smithr_quick_save.json"
-const WORLD_CHUNK_SCENE := preload("res://world/world_chunk.tscn")
 
-@onready var _editor_shell: EditorShell = $UI/EditorShell
-@onready var _services: Node = $Services
+@onready var _editor_shell = $UI/EditorShell
 @onready var _world_root: Node3D = $WorldRoot
-@onready var _editor_camera_rig: EditorCameraRig = $EditorCameraRig
+@onready var _camera_rig: Node3D = $EditorCameraRig
+@onready var _camera_pivot: Node3D = $EditorCameraRig/Pivot
 @onready var _camera: Camera3D = $EditorCameraRig/Pivot/Camera3D
-@onready var _chunk_container: Node3D = $WorldRoot/ChunkContainer
-@onready var _chunk_streamer: ChunkStreamer = $Services/ChunkStreamer
-@onready var _terrain_mesher: TerrainMesher = $Services/TerrainMesher
-@onready var _command_history: CommandHistory = $Services/CommandHistory
-@onready var _autosave_service: AutosaveService = $Services/AutosaveService
 
-var _world_document: WorldDocument
-var _chunks_by_key: Dictionary = {}
-var _sculpt_tool: SculptTool
-var _active_tool := "Sculpt"
-var _is_sculpting := false
-var _focus_chunk := Vector2i.ZERO
-var _last_terrain_hit := Vector3(32.0, 0.0, 32.0)
+var _terrain_mesh_instance: MeshInstance3D
+var _terrain_body: StaticBody3D
+var _terrain_collision: CollisionShape3D
+var _grid_mesh_instance: MeshInstance3D
 var _props_root: Node3D
-var _placed_prop_count := 0
+var _terrain_material: StandardMaterial3D
+var _grid_material: StandardMaterial3D
+var _height_samples := PackedFloat32Array()
+var _active_tool := "Sculpt"
+var _sculpt_mode := "Raise"
+var _brush_radius_m := 8.0
+var _brush_strength_percent := 50.0
+var _brush_falloff := "Smooth"
+var _is_sculpting := false
+var _stroke_before := PackedFloat32Array()
+var _stroke_changed := false
+var _stroke_flatten_height := 0.0
+var _dirty := false
+var _undo_stack: Array = []
+var _redo_stack: Array = []
 var _selected_prop: Node3D
-var _debug_chunks_visible := true
 var _prop_materials: Dictionary = {}
+var _debug_grid_visible := true
 
 
 func _ready() -> void:
 	DisplayServer.window_set_title(PRODUCT_NAME)
-	set_process(true)
-	_initialize_services()
-	_setup_props_root()
-	_setup_phase_three_streaming()
+	_configure_camera()
+	_create_editor_world_nodes()
+	_generate_starter_terrain()
+	_rebuild_terrain_mesh()
+	_create_starter_props()
 	_connect_editor_shell()
-	_editor_shell.set_status("Sculpt ready: drag the land, or pick Place and click", _focus_chunk, "Idle", _placed_prop_count)
+	_update_status("Starter terrain ready: sculpt, place, save")
+	call_deferred("_announce_ready")
 
 
-func _process(_delta: float) -> void:
-	_update_streaming_focus()
-	_process_rebuild_queue()
+func _announce_ready() -> void:
+	_update_status("Starter terrain ready: sculpt, place, save")
 
 
 func _unhandled_input(event: InputEvent) -> void:
@@ -55,40 +65,47 @@ func _unhandled_input(event: InputEvent) -> void:
 		_handle_mouse_motion(event as InputEventMouseMotion)
 
 
-func _initialize_services() -> void:
-	for child: Node in _services.get_children():
-		if child.has_method("initialize"):
-			child.call("initialize", self)
+func _configure_camera() -> void:
+	_camera_rig.global_position = Vector3(64.0, 0.0, 64.0)
+	_camera_pivot.rotation = Vector3(deg_to_rad(-56.0), deg_to_rad(45.0), 0.0)
+	_camera.position = Vector3(0.0, 0.0, 120.0)
+	_camera.current = true
+	_camera.far = 420.0
+	_camera.fov = 50.0
 
 
-func _setup_props_root() -> void:
+func _create_editor_world_nodes() -> void:
+	_terrain_material = StandardMaterial3D.new()
+	_terrain_material.albedo_color = Color(0.34, 0.58, 0.31, 1.0)
+	_terrain_material.roughness = 1.0
+
+	_grid_material = StandardMaterial3D.new()
+	_grid_material.albedo_color = Color(0.03, 0.04, 0.035, 0.88)
+	_grid_material.roughness = 1.0
+
+	_terrain_mesh_instance = MeshInstance3D.new()
+	_terrain_mesh_instance.name = "LiveTerrain"
+	_world_root.add_child(_terrain_mesh_instance)
+
+	_terrain_body = StaticBody3D.new()
+	_terrain_body.name = "LiveTerrainBody"
+	_terrain_body.collision_layer = TERRAIN_COLLISION_LAYER
+	_terrain_body.collision_mask = 0
+	_world_root.add_child(_terrain_body)
+
+	_terrain_collision = CollisionShape3D.new()
+	_terrain_collision.name = "LiveTerrainCollision"
+	_terrain_body.add_child(_terrain_collision)
+
+	_grid_mesh_instance = MeshInstance3D.new()
+	_grid_mesh_instance.name = "TerrainGrid"
+	_grid_mesh_instance.mesh = _build_grid_mesh()
+	_grid_mesh_instance.material_override = _grid_material
+	_world_root.add_child(_grid_mesh_instance)
+
 	_props_root = Node3D.new()
 	_props_root.name = "PlacedProps"
 	_world_root.add_child(_props_root)
-
-
-func _setup_phase_three_streaming() -> void:
-	_world_document = WorldDocument.new()
-	_reset_streaming_for_current_document()
-
-
-func _reset_streaming_for_current_document() -> void:
-	_chunks_by_key.clear()
-	_terrain_mesher.pending_rebuilds.clear()
-	_focus_chunk = Vector2i.ZERO
-	_editor_camera_rig.frame_origin()
-	for child in _chunk_container.get_children():
-		child.queue_free()
-
-	_sculpt_tool = SculptTool.new()
-	_sculpt_tool.configure(_world_document, _chunks_by_key)
-	_sculpt_tool.set_mode_from_name("Raise")
-	_sculpt_tool.set_falloff_from_name("Smooth")
-	_sculpt_tool.radius_m = 8.0
-	_sculpt_tool.strength_percent = 50.0
-
-	var initial_diff := _chunk_streamer.set_focus_chunk(_focus_chunk, true)
-	_apply_streaming_diff(initial_diff)
 
 
 func _connect_editor_shell() -> void:
@@ -100,113 +117,105 @@ func _connect_editor_shell() -> void:
 	_editor_shell.brush_falloff_selected.connect(_on_brush_falloff_selected)
 	_editor_shell.set_active_tool(_active_tool)
 	_editor_shell.set_tool_hint(_hint_for_tool(_active_tool))
-	_editor_shell.set_sculpt_settings("Raise", _sculpt_tool.radius_m, _sculpt_tool.strength_percent, "Smooth")
+	_editor_shell.set_sculpt_settings(_sculpt_mode, _brush_radius_m, _brush_strength_percent, _brush_falloff)
 	_editor_shell.set_selection_summary("None")
 
 
-func _update_streaming_focus() -> void:
-	var next_focus := ChunkCoordinates.world_to_chunk(_editor_camera_rig.global_position)
-	if next_focus == _focus_chunk:
-		return
-
-	_focus_chunk = next_focus
-	var diff := _chunk_streamer.set_focus_chunk(_focus_chunk)
-	_apply_streaming_diff(diff)
-	_editor_shell.set_status("Streaming focus changed", _focus_chunk, _autosave_label(), _placed_prop_count)
-
-
-func _apply_streaming_diff(diff: Dictionary) -> void:
-	for coord in diff["entered_loaded"]:
-		var state := _chunk_streamer.get_state_for_chunk(coord)
-		var build_now := state == ChunkStreamer.ChunkState.ACTIVE
-		_ensure_chunk(coord, state, build_now)
-
-	for coord in _chunk_streamer.loaded_chunks:
-		var state := _chunk_streamer.get_state_for_chunk(coord)
-		var chunk := _ensure_chunk(coord, state, false)
-		chunk.set_runtime_state(state)
-		if not chunk.has_mesh():
-			if state == ChunkStreamer.ChunkState.ACTIVE:
-				if chunk.is_node_ready():
-					chunk.rebuild_terrain(true)
-				else:
-					chunk.build_on_ready = true
-			else:
-				_queue_chunk_rebuild(coord)
-		elif state == ChunkStreamer.ChunkState.ACTIVE and not chunk.has_collision():
-			_queue_chunk_rebuild(coord)
-		elif state == ChunkStreamer.ChunkState.WARM and chunk.has_collision():
-			_queue_chunk_rebuild(coord)
-
-	for coord in diff["exited_loaded"]:
-		_unload_chunk(coord)
-
-	_sculpt_tool.set_chunks(_chunks_by_key)
+func _generate_starter_terrain() -> void:
+	_height_samples.resize(TERRAIN_SAMPLES * TERRAIN_SAMPLES)
+	for z in range(TERRAIN_SAMPLES):
+		for x in range(TERRAIN_SAMPLES):
+			var world_x := float(x) * CELL_SIZE_M
+			var world_z := float(z) * CELL_SIZE_M
+			var hill_a := _hill_height(world_x, world_z, Vector2(42.0, 44.0), 28.0, 7.0)
+			var hill_b := _hill_height(world_x, world_z, Vector2(86.0, 74.0), 34.0, 5.0)
+			var basin := _hill_height(world_x, world_z, Vector2(82.0, 32.0), 22.0, -2.0)
+			_height_samples[_sample_index(x, z)] = hill_a + hill_b + basin
+	_dirty = false
+	_undo_stack.clear()
+	_redo_stack.clear()
 
 
-func _ensure_chunk(coord: Vector2i, state: int, build_now: bool) -> WorldChunk:
-	var key := ChunkCoordinates.chunk_to_key(coord)
-	if _chunks_by_key.has(key):
-		return _chunks_by_key[key] as WorldChunk
-
-	var chunk := WORLD_CHUNK_SCENE.instantiate() as WorldChunk
-	chunk.configure(_world_document.get_chunk_data(coord), _terrain_mesher, build_now)
-	chunk.set_runtime_state(state)
-	chunk.set_debug_visible(_debug_chunks_visible)
-	_chunk_container.add_child(chunk)
-	_chunks_by_key[key] = chunk
-	return chunk
+func _hill_height(world_x: float, world_z: float, center: Vector2, radius: float, height: float) -> float:
+	var distance := Vector2(world_x, world_z).distance_to(center)
+	var t := clampf(1.0 - distance / radius, 0.0, 1.0)
+	return height * t * t * (3.0 - 2.0 * t)
 
 
-func _unload_chunk(coord: Vector2i) -> void:
-	var key := ChunkCoordinates.chunk_to_key(coord)
-	if not _chunks_by_key.has(key):
-		return
+func _rebuild_terrain_mesh(update_collision: bool = true) -> void:
+	var vertices := PackedVector3Array()
+	var normals := PackedVector3Array()
+	var uvs := PackedVector2Array()
+	var indices := PackedInt32Array()
+	vertices.resize(TERRAIN_SAMPLES * TERRAIN_SAMPLES)
+	normals.resize(TERRAIN_SAMPLES * TERRAIN_SAMPLES)
+	uvs.resize(TERRAIN_SAMPLES * TERRAIN_SAMPLES)
 
-	var chunk := _chunks_by_key[key] as WorldChunk
-	chunk.set_runtime_state(WorldChunk.RuntimeState.UNLOADED)
-	chunk.queue_free()
-	_chunks_by_key.erase(key)
+	for z in range(TERRAIN_SAMPLES):
+		for x in range(TERRAIN_SAMPLES):
+			var index := _sample_index(x, z)
+			vertices[index] = Vector3(float(x) * CELL_SIZE_M, _height_samples[index], float(z) * CELL_SIZE_M)
+			normals[index] = _calculate_normal(x, z)
+			uvs[index] = Vector2(float(x) / float(TERRAIN_CELLS), float(z) / float(TERRAIN_CELLS))
+
+	for z in range(TERRAIN_CELLS):
+		for x in range(TERRAIN_CELLS):
+			var i0 := _sample_index(x, z)
+			var i1 := _sample_index(x + 1, z)
+			var i2 := _sample_index(x, z + 1)
+			var i3 := _sample_index(x + 1, z + 1)
+			indices.append(i0)
+			indices.append(i2)
+			indices.append(i1)
+			indices.append(i1)
+			indices.append(i2)
+			indices.append(i3)
+			indices.append(i0)
+			indices.append(i1)
+			indices.append(i2)
+			indices.append(i1)
+			indices.append(i3)
+			indices.append(i2)
+
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	arrays[Mesh.ARRAY_NORMAL] = normals
+	arrays[Mesh.ARRAY_TEX_UV] = uvs
+	arrays[Mesh.ARRAY_INDEX] = indices
+
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_TRIANGLES, arrays)
+	mesh.surface_set_material(0, _terrain_material)
+	_terrain_mesh_instance.mesh = mesh
+	if update_collision:
+		_terrain_collision.shape = mesh.create_trimesh_shape()
 
 
-func _queue_chunk_rebuild(coord: Vector2i) -> void:
-	if _chunks_by_key.has(ChunkCoordinates.chunk_to_key(coord)):
-		_terrain_mesher.queue_rebuild(coord)
+func _build_grid_mesh() -> ArrayMesh:
+	var vertices := PackedVector3Array()
+	var y := 0.12
+	for line in range(0, TERRAIN_CELLS + 1, 4):
+		var p := float(line) * CELL_SIZE_M
+		vertices.append(Vector3(p, y, 0.0))
+		vertices.append(Vector3(p, y, TERRAIN_SIZE_M))
+		vertices.append(Vector3(0.0, y, p))
+		vertices.append(Vector3(TERRAIN_SIZE_M, y, p))
+
+	var arrays := []
+	arrays.resize(Mesh.ARRAY_MAX)
+	arrays[Mesh.ARRAY_VERTEX] = vertices
+	var mesh := ArrayMesh.new()
+	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
+	return mesh
 
 
-func _queue_chunk_rebuilds(coords: Array[Vector2i]) -> void:
-	for coord in coords:
-		_queue_chunk_rebuild(coord)
-
-
-func _process_rebuild_queue() -> void:
-	var rebuilt := 0
-	for _i in range(_terrain_mesher.max_rebuilds_per_frame):
-		var coord := _terrain_mesher.take_next_rebuild()
-		if coord == TerrainMesher.INVALID_REBUILD_COORD:
-			break
-
-		var key := ChunkCoordinates.chunk_to_key(coord)
-		if not _chunks_by_key.has(key):
-			continue
-
-		var chunk := _chunks_by_key[key] as WorldChunk
-		if not chunk.is_node_ready():
-			_queue_chunk_rebuild(coord)
-			continue
-		if chunk.runtime_state == WorldChunk.RuntimeState.UNLOADED:
-			continue
-
-		chunk.rebuild_terrain(chunk.runtime_state == WorldChunk.RuntimeState.ACTIVE)
-		rebuilt += 1
-
-	if rebuilt > 0:
-		_editor_shell.set_status(
-			"Rebuilt %d chunk mesh" % rebuilt,
-			_focus_chunk,
-			"Dirty" if _is_sculpting else _autosave_label(),
-			_placed_prop_count
-		)
+func _calculate_normal(sample_x: int, sample_z: int) -> Vector3:
+	var west := _height_at_sample(sample_x - 1, sample_z)
+	var east := _height_at_sample(sample_x + 1, sample_z)
+	var north := _height_at_sample(sample_x, sample_z - 1)
+	var south := _height_at_sample(sample_x, sample_z + 1)
+	return Vector3(west - east, 2.0 * CELL_SIZE_M, north - south).normalized()
 
 
 func _handle_mouse_button(event: InputEventMouseButton) -> void:
@@ -230,38 +239,93 @@ func _handle_mouse_motion(event: InputEventMouseMotion) -> void:
 	if not _is_sculpting:
 		return
 
-	var hit := _pick_terrain(event.position)
+	var hit := _terrain_hit_from_screen(event.position)
 	if hit.is_empty():
-		_stamp_sculpt(_last_terrain_hit, event.shift_pressed)
-	else:
-		_stamp_sculpt(hit["position"] as Vector3, event.shift_pressed)
+		return
+	_stamp_sculpt(hit["position"], event.shift_pressed)
 	get_viewport().set_input_as_handled()
 
 
 func _begin_sculpt_at_screen(screen_position: Vector2, invert_raise_lower: bool) -> void:
-	var hit := _pick_terrain(screen_position)
+	var hit := _terrain_hit_from_screen(screen_position)
 	if hit.is_empty():
+		_update_status("Point at the visible terrain to sculpt")
 		return
 
+	var position: Vector3 = hit["position"]
 	_is_sculpting = true
-	var position := hit["position"] as Vector3
-	_sculpt_tool.begin_stroke(position)
+	_stroke_before = _height_samples.duplicate()
+	_stroke_changed = false
+	_stroke_flatten_height = _height_at_world(position)
 	_stamp_sculpt(position, invert_raise_lower)
 	get_viewport().set_input_as_handled()
 
 
-func _place_prop_at_screen(screen_position: Vector2) -> void:
-	var hit := _pick_terrain(screen_position)
-	if hit.is_empty():
-		_editor_shell.set_status("Place needs visible active terrain under the cursor", _focus_chunk, _autosave_label(), _placed_prop_count)
+func _stamp_sculpt(world_position: Vector3, invert_raise_lower: bool) -> void:
+	var sample_center := _world_to_sample(world_position)
+	var sample_radius := ceili(_brush_radius_m / CELL_SIZE_M)
+	var source := _height_samples.duplicate()
+	var strength := clampf(_brush_strength_percent / 100.0, 0.0, 1.0)
+	var direction := -1.0 if invert_raise_lower else 1.0
+	if _sculpt_mode == "Lower":
+		direction *= -1.0
+
+	for z in range(maxi(0, sample_center.y - sample_radius), mini(TERRAIN_SAMPLES, sample_center.y + sample_radius + 1)):
+		for x in range(maxi(0, sample_center.x - sample_radius), mini(TERRAIN_SAMPLES, sample_center.x + sample_radius + 1)):
+			var sample_position := Vector2(float(x) * CELL_SIZE_M, float(z) * CELL_SIZE_M)
+			var center_position := Vector2(world_position.x, world_position.z)
+			var distance := sample_position.distance_to(center_position)
+			if distance > _brush_radius_m:
+				continue
+
+			var radius_denominator := _brush_radius_m
+			if radius_denominator < 0.001:
+				radius_denominator = 0.001
+			var weight := _falloff_weight(distance / radius_denominator)
+			var index := _sample_index(x, z)
+			var current := source[index]
+			var next := current
+			match _sculpt_mode:
+				"Raise", "Lower":
+					next = current + direction * strength * weight * 1.25
+				"Smooth":
+					next = lerpf(current, _average_height_from(source, x, z), strength * weight * 0.45)
+				"Flatten":
+					next = lerpf(current, _stroke_flatten_height, strength * weight * 0.55)
+
+			next = clampf(next, -24.0, 48.0)
+			if absf(next - _height_samples[index]) > 0.001:
+				_height_samples[index] = next
+				_stroke_changed = true
+
+	_rebuild_terrain_mesh(false)
+	_update_status("Sculpting terrain", "Dirty")
+
+
+func _finish_sculpt_stroke() -> void:
+	_is_sculpting = false
+	if not _stroke_changed:
+		_update_status("Sculpt stroke had no terrain changes")
 		return
 
-	var prop := _create_tree_prop(hit["position"] as Vector3)
+	_undo_stack.append({"before": _packed_heights_to_array(_stroke_before), "after": _serialize_heights()})
+	_redo_stack.clear()
+	_dirty = true
+	_rebuild_terrain_mesh(true)
+	_update_status("Sculpt stroke committed", "Dirty")
+
+
+func _place_prop_at_screen(screen_position: Vector2) -> void:
+	var hit := _terrain_hit_from_screen(screen_position)
+	if hit.is_empty():
+		_update_status("Point at the visible terrain to place")
+		return
+
+	var prop := _create_tree_prop(hit["position"])
 	_selected_prop = prop
-	_placed_prop_count = _props_root.get_child_count()
-	_autosave_service.mark_dirty()
+	_dirty = true
 	_editor_shell.set_selection_summary(prop.name)
-	_editor_shell.set_status("Placed %s" % prop.name, ChunkCoordinates.world_to_chunk(prop.global_position), "Dirty", _placed_prop_count)
+	_update_status("Placed %s" % prop.name, "Dirty")
 	get_viewport().set_input_as_handled()
 
 
@@ -269,44 +333,29 @@ func _select_prop_at_screen(screen_position: Vector2) -> void:
 	_selected_prop = _pick_prop(screen_position)
 	if _selected_prop == null:
 		_editor_shell.set_selection_summary("None")
-		_editor_shell.set_status("No placed object under cursor", _focus_chunk, _autosave_label(), _placed_prop_count)
+		_update_status("No placed object under cursor")
 	else:
 		_editor_shell.set_selection_summary(_selected_prop.name)
-		_editor_shell.set_status("Selected %s" % _selected_prop.name, ChunkCoordinates.world_to_chunk(_selected_prop.global_position), _autosave_label(), _placed_prop_count)
+		_update_status("Selected %s" % _selected_prop.name)
 	get_viewport().set_input_as_handled()
 
 
-func _stamp_sculpt(world_position: Vector3, invert_raise_lower: bool) -> void:
-	if _sculpt_tool.apply_at(world_position, invert_raise_lower):
-		_last_terrain_hit = world_position
-		_queue_chunk_rebuilds(_sculpt_tool.get_current_affected_coords())
-		_process_rebuild_queue()
-		_editor_shell.set_status("Sculpting terrain", ChunkCoordinates.world_to_chunk(world_position), "Dirty", _placed_prop_count)
-
-
-func _finish_sculpt_stroke() -> void:
-	_is_sculpting = false
-	var command := _sculpt_tool.end_stroke()
-	if command == null:
-		_editor_shell.set_status("Sculpt stroke had no terrain changes", _focus_chunk, _autosave_label(), _placed_prop_count)
-		return
-
-	_command_history.record_executed_command(command)
-	_autosave_service.mark_dirty()
-	_editor_shell.set_status("Sculpt stroke committed", _focus_chunk, "Dirty", _placed_prop_count)
-
-
-func _pick_terrain(screen_position: Vector2) -> Dictionary:
+func _terrain_hit_from_screen(screen_position: Vector2) -> Dictionary:
 	var origin := _camera.project_ray_origin(screen_position)
-	var end := origin + _camera.project_ray_normal(screen_position) * TERRAIN_RAY_LENGTH_M
-	var query := PhysicsRayQueryParameters3D.create(origin, end)
-	query.collision_mask = TERRAIN_COLLISION_MASK
-	var result := get_world_3d().direct_space_state.intersect_ray(query)
-	if not result.is_empty():
-		_last_terrain_hit = result["position"] as Vector3
-		return result
+	var direction := _camera.project_ray_normal(screen_position)
+	if is_zero_approx(direction.y):
+		return {}
 
-	return _pick_terrain_math_fallback(origin, end)
+	var t := -origin.y / direction.y
+	if t < 0.0 or t > TERRAIN_RAY_LENGTH_M:
+		return {}
+
+	var world_hit := origin + direction * t
+	if world_hit.x < 0.0 or world_hit.x > TERRAIN_SIZE_M or world_hit.z < 0.0 or world_hit.z > TERRAIN_SIZE_M:
+		return {}
+
+	world_hit.y = _height_at_world(world_hit)
+	return {"position": world_hit}
 
 
 func _pick_prop(screen_position: Vector2) -> Node3D:
@@ -326,27 +375,11 @@ func _pick_prop(screen_position: Vector2) -> Node3D:
 	return null
 
 
-func _pick_terrain_math_fallback(origin: Vector3, end: Vector3) -> Dictionary:
-	var direction := end - origin
-	if is_zero_approx(direction.y):
-		return {}
-
-	var t := -origin.y / direction.y
-	if t < 0.0 or t > 1.0:
-		return {}
-
-	var world_hit := origin + direction * t
-	if not _is_world_position_in_active_chunks(world_hit):
-		return {}
-
-	world_hit.y = _world_document.get_height_at_world(world_hit)
-	_last_terrain_hit = world_hit
-	return {"position": world_hit}
-
-
-func _is_world_position_in_active_chunks(world_position: Vector3) -> bool:
-	var coord := ChunkCoordinates.world_to_chunk(world_position)
-	return _chunk_streamer.is_active(coord)
+func _create_starter_props() -> void:
+	_clear_props()
+	_create_tree_prop(Vector3(34.0, _height_at_world_xz(34.0, 38.0), 38.0))
+	_create_tree_prop(Vector3(54.0, _height_at_world_xz(54.0, 46.0), 46.0))
+	_create_tree_prop(Vector3(92.0, _height_at_world_xz(92.0, 80.0), 80.0))
 
 
 func _create_tree_prop(world_position: Vector3) -> Node3D:
@@ -374,7 +407,7 @@ func _create_tree_prop(world_position: Vector3) -> Node3D:
 	canopy_mesh.radius = 2.1
 	canopy_mesh.height = 3.0
 	canopy.mesh = canopy_mesh
-	canopy.position = Vector3(0.0, 3.6, 0.0)
+	canopy.position = Vector3(0.0, 3.7, 0.0)
 	canopy.scale = Vector3(1.0, 0.82, 1.0)
 	canopy.material_override = _get_prop_material("canopy", Color(0.17, 0.42, 0.20, 1.0))
 	prop.add_child(canopy)
@@ -392,13 +425,12 @@ func _create_tree_prop(world_position: Vector3) -> Node3D:
 	prop.add_child(pick_body)
 
 	_props_root.add_child(prop)
-	_placed_prop_count = _props_root.get_child_count()
 	return prop
 
 
 func _get_prop_material(key: String, color: Color) -> StandardMaterial3D:
 	if _prop_materials.has(key):
-		return _prop_materials[key] as StandardMaterial3D
+		return _prop_materials[key]
 
 	var material := StandardMaterial3D.new()
 	material.albedo_color = color
@@ -410,7 +442,11 @@ func _get_prop_material(key: String, color: Color) -> StandardMaterial3D:
 func _on_action_requested(action_name: String) -> void:
 	match action_name:
 		"New":
-			_new_world()
+			_generate_starter_terrain()
+			_rebuild_terrain_mesh()
+			_create_starter_props()
+			_editor_shell.set_selection_summary("None")
+			_update_status("New starter world ready")
 		"Open":
 			_open_quick_save()
 		"Save":
@@ -420,107 +456,131 @@ func _on_action_requested(action_name: String) -> void:
 		"Redo":
 			_redo()
 		"Build":
-			_editor_shell.set_status("Build mode active: Sculpt and Place are live", _focus_chunk, _autosave_label(), _placed_prop_count)
+			_update_status("Build mode: Sculpt and Place are live")
 		"Play":
-			_editor_shell.set_status("Play mode needs the character pass; edit mode stays live", _focus_chunk, _autosave_label(), _placed_prop_count)
+			_update_status("Play view comes after editing feels good")
 		"Export":
 			_save_quick_snapshot("Quick save refreshed; GitHub Pages exports on push")
 		"Settings":
-			_toggle_debug_chunks()
-
-
-func _new_world() -> void:
-	_clear_props()
-	_selected_prop = null
-	_command_history.clear()
-	_autosave_service.clear_dirty()
-	_world_document = WorldDocument.new()
-	_reset_streaming_for_current_document()
-	_editor_shell.set_selection_summary("None")
-	_editor_shell.set_status("New world ready", _focus_chunk, "Idle", _placed_prop_count)
+			_toggle_grid()
 
 
 func _undo() -> void:
-	if _command_history.can_undo():
-		_command_history.undo()
-		_autosave_service.mark_dirty()
-		_editor_shell.set_status("Undo terrain stroke", _focus_chunk, "Dirty", _placed_prop_count)
-	else:
-		_editor_shell.set_status("Nothing to undo", _focus_chunk, _autosave_label(), _placed_prop_count)
+	if _undo_stack.is_empty():
+		_update_status("Nothing to undo")
+		return
+
+	var command := _undo_stack.pop_back() as Dictionary
+	var before = command.get("before", [])
+	if not (before is Array):
+		_update_status("Undo data was invalid")
+		return
+	_redo_stack.append(command)
+	_load_heights(before)
+	_dirty = true
+	_rebuild_terrain_mesh()
+	_update_status("Undo terrain stroke", "Dirty")
 
 
 func _redo() -> void:
-	if _command_history.can_redo():
-		_command_history.redo()
-		_autosave_service.mark_dirty()
-		_editor_shell.set_status("Redo terrain stroke", _focus_chunk, "Dirty", _placed_prop_count)
-	else:
-		_editor_shell.set_status("Nothing to redo", _focus_chunk, _autosave_label(), _placed_prop_count)
+	if _redo_stack.is_empty():
+		_update_status("Nothing to redo")
+		return
+
+	var command := _redo_stack.pop_back() as Dictionary
+	var after = command.get("after", [])
+	if not (after is Array):
+		_update_status("Redo data was invalid")
+		return
+	_undo_stack.append(command)
+	_load_heights(after)
+	_dirty = true
+	_rebuild_terrain_mesh()
+	_update_status("Redo terrain stroke", "Dirty")
 
 
 func _save_quick_snapshot(success_message: String) -> void:
 	var dir := DirAccess.open("user://")
 	if dir == null:
-		_editor_shell.set_status("Save failed: user storage is unavailable", _focus_chunk, _autosave_label(), _placed_prop_count)
+		_update_status("Save failed: user storage unavailable")
 		return
 
 	var dir_error := dir.make_dir_recursive("worlds")
 	if dir_error != OK:
-		_editor_shell.set_status("Save failed: %s" % error_string(dir_error), _focus_chunk, _autosave_label(), _placed_prop_count)
+		_update_status("Save failed: %s" % error_string(dir_error))
 		return
 
 	var file := FileAccess.open(QUICK_SAVE_PATH, FileAccess.WRITE)
 	if file == null:
-		_editor_shell.set_status("Save failed: %s" % error_string(FileAccess.get_open_error()), _focus_chunk, _autosave_label(), _placed_prop_count)
+		_update_status("Save failed: %s" % error_string(FileAccess.get_open_error()))
 		return
 
 	var payload := {
 		"format": "world_smithr",
-		"version": 1,
-		"name": _world_document.name,
-		"heights": _world_document.serialize_height_samples(),
+		"version": 2,
+		"heights": _serialize_heights(),
 		"props": _serialize_props(),
 	}
 	file.store_string(JSON.stringify(payload, "\t"))
-	_autosave_service.clear_dirty()
-	_editor_shell.set_status(success_message, _focus_chunk, "Idle", _placed_prop_count)
+	_dirty = false
+	_update_status(success_message)
 
 
 func _open_quick_save() -> void:
 	if not FileAccess.file_exists(QUICK_SAVE_PATH):
-		_editor_shell.set_status("No quick save found yet", _focus_chunk, _autosave_label(), _placed_prop_count)
+		_update_status("No quick save found yet")
 		return
 
 	var file := FileAccess.open(QUICK_SAVE_PATH, FileAccess.READ)
 	if file == null:
-		_editor_shell.set_status("Open failed: %s" % error_string(FileAccess.get_open_error()), _focus_chunk, _autosave_label(), _placed_prop_count)
+		_update_status("Open failed: %s" % error_string(FileAccess.get_open_error()))
 		return
 
-	var parsed := JSON.parse_string(file.get_as_text())
+	var parsed = JSON.parse_string(file.get_as_text())
 	if not (parsed is Dictionary):
-		_editor_shell.set_status("Open failed: save file is not valid JSON", _focus_chunk, _autosave_label(), _placed_prop_count)
+		_update_status("Open failed: save file is not JSON")
 		return
 
 	var save_data := parsed as Dictionary
-	_world_document = WorldDocument.new()
-	_world_document.name = str(save_data.get("name", "Untitled World"))
-	var heights_variant = save_data.get("heights", {})
-	if heights_variant is Dictionary:
-		_world_document.load_height_samples(heights_variant as Dictionary)
+	var heights_value = save_data.get("heights", [])
+	if heights_value is Array:
+		_load_heights(heights_value)
+		_rebuild_terrain_mesh()
 
 	_clear_props()
-	_reset_streaming_for_current_document()
-	var props_variant = save_data.get("props", [])
-	if props_variant is Array:
-		_restore_props(props_variant as Array)
-	_command_history.clear()
-	_autosave_service.clear_dirty()
+	var props_value = save_data.get("props", [])
+	if props_value is Array:
+		_restore_props(props_value)
+	_dirty = false
+	_undo_stack.clear()
+	_redo_stack.clear()
 	_editor_shell.set_selection_summary("None")
-	_editor_shell.set_status("Opened quick save", _focus_chunk, "Idle", _placed_prop_count)
+	_update_status("Opened quick save")
 
 
-func _serialize_props() -> Array[Dictionary]:
-	var props: Array[Dictionary] = []
+func _serialize_heights() -> Array:
+	return _packed_heights_to_array(_height_samples)
+
+
+func _packed_heights_to_array(source: PackedFloat32Array) -> Array:
+	var values := []
+	values.resize(source.size())
+	for i in range(source.size()):
+		values[i] = source[i]
+	return values
+
+
+func _load_heights(values: Array) -> void:
+	_height_samples.resize(TERRAIN_SAMPLES * TERRAIN_SAMPLES)
+	for i in range(_height_samples.size()):
+		if i < values.size():
+			_height_samples[i] = float(values[i])
+		else:
+			_height_samples[i] = 0.0
+
+
+func _serialize_props() -> Array:
+	var props := []
 	for child in _props_root.get_children():
 		if child is Node3D and child.has_meta("prop_type"):
 			var prop := child as Node3D
@@ -545,36 +605,33 @@ func _restore_props(prop_data: Array) -> void:
 		prop.rotation.y = float(prop_dict.get("rotation_y", prop.rotation.y))
 		var saved_scale := float(prop_dict.get("scale", prop.scale.x))
 		prop.scale = Vector3.ONE * saved_scale
-	_placed_prop_count = _props_root.get_child_count()
 
 
 func _clear_props() -> void:
+	_selected_prop = null
 	if _props_root == null:
 		return
-
 	for child in _props_root.get_children():
 		child.free()
-	_placed_prop_count = 0
 
 
-func _toggle_debug_chunks() -> void:
-	_debug_chunks_visible = not _debug_chunks_visible
-	for key in _chunks_by_key.keys():
-		var chunk := _chunks_by_key[key] as WorldChunk
-		chunk.set_debug_visible(_debug_chunks_visible)
-	var state := "shown" if _debug_chunks_visible else "hidden"
-	_editor_shell.set_status("Chunk labels and borders %s" % state, _focus_chunk, _autosave_label(), _placed_prop_count)
+func _toggle_grid() -> void:
+	_debug_grid_visible = not _debug_grid_visible
+	_grid_mesh_instance.visible = _debug_grid_visible
+	var state := "shown" if _debug_grid_visible else "hidden"
+	_update_status("Terrain grid %s" % state)
 
 
 func _on_tool_selected(tool_name: String) -> void:
 	_active_tool = tool_name
 	_editor_shell.set_tool_hint(_hint_for_tool(tool_name))
-	if tool_name == "Sculpt":
-		_editor_shell.set_status("Sculpt: drag terrain; Shift inverts Raise/Lower", _focus_chunk, _autosave_label(), _placed_prop_count)
-	elif tool_name == "Place":
-		_editor_shell.set_status("Place: click terrain to drop trees", _focus_chunk, _autosave_label(), _placed_prop_count)
-	elif tool_name == "Select":
-		_editor_shell.set_status("Select: click placed trees", _focus_chunk, _autosave_label(), _placed_prop_count)
+	match tool_name:
+		"Sculpt":
+			_update_status("Sculpt: drag terrain; Shift flips Raise/Lower")
+		"Place":
+			_update_status("Place: click terrain to drop trees")
+		"Select":
+			_update_status("Select: click a tree")
 
 
 func _hint_for_tool(tool_name: String) -> String:
@@ -582,29 +639,86 @@ func _hint_for_tool(tool_name: String) -> String:
 		"Sculpt":
 			return "Drag on terrain to shape it. Shift flips Raise and Lower."
 		"Place":
-			return "Click visible terrain to place a low-poly tree."
+			return "Click terrain to place a low-poly tree."
 		"Select":
 			return "Click a placed tree to inspect it."
-	return "Sculpt and Place are live in this build."
+	return "Sculpt, Place, Save, and Open are live."
 
 
 func _on_sculpt_mode_selected(mode_name: String) -> void:
-	_sculpt_tool.set_mode_from_name(mode_name)
-	_editor_shell.set_status("Sculpt mode: %s" % mode_name, _focus_chunk, _autosave_label(), _placed_prop_count)
+	_sculpt_mode = mode_name
+	_update_status("Sculpt mode: %s" % mode_name)
 
 
 func _on_brush_radius_changed(value: float) -> void:
-	_sculpt_tool.radius_m = value
+	_brush_radius_m = value
 
 
 func _on_brush_strength_changed(value: float) -> void:
-	_sculpt_tool.strength_percent = value
+	_brush_strength_percent = value
 
 
 func _on_brush_falloff_selected(falloff_name: String) -> void:
-	_sculpt_tool.set_falloff_from_name(falloff_name)
+	_brush_falloff = falloff_name
 
 
-func _autosave_label() -> String:
-	return "Dirty" if _autosave_service.is_processing() else "Idle"
+func _falloff_weight(normalized_distance: float) -> float:
+	var t := clampf(normalized_distance, 0.0, 1.0)
+	match _brush_falloff:
+		"Hard":
+			return 1.0
+		"Linear":
+			return 1.0 - t
+	return 1.0 - (t * t * (3.0 - 2.0 * t))
 
+
+func _average_height_from(source: PackedFloat32Array, sample_x: int, sample_z: int) -> float:
+	var total := 0.0
+	var count := 0
+	for z in range(maxi(0, sample_z - 1), mini(TERRAIN_SAMPLES, sample_z + 2)):
+		for x in range(maxi(0, sample_x - 1), mini(TERRAIN_SAMPLES, sample_x + 2)):
+			total += source[_sample_index(x, z)]
+			count += 1
+	return total / float(maxi(count, 1))
+
+
+func _height_at_world(world_position: Vector3) -> float:
+	return _height_at_world_xz(world_position.x, world_position.z)
+
+
+func _height_at_world_xz(world_x: float, world_z: float) -> float:
+	var sample_x := clampf(world_x / CELL_SIZE_M, 0.0, float(TERRAIN_CELLS))
+	var sample_z := clampf(world_z / CELL_SIZE_M, 0.0, float(TERRAIN_CELLS))
+	var x0 := floori(sample_x)
+	var z0 := floori(sample_z)
+	var x1 := mini(x0 + 1, TERRAIN_CELLS)
+	var z1 := mini(z0 + 1, TERRAIN_CELLS)
+	var tx := sample_x - float(x0)
+	var tz := sample_z - float(z0)
+	var north := lerpf(_height_at_sample(x0, z0), _height_at_sample(x1, z0), tx)
+	var south := lerpf(_height_at_sample(x0, z1), _height_at_sample(x1, z1), tx)
+	return lerpf(north, south, tz)
+
+
+func _world_to_sample(world_position: Vector3) -> Vector2i:
+	return Vector2i(
+		mini(maxi(roundi(world_position.x / CELL_SIZE_M), 0), TERRAIN_CELLS),
+		mini(maxi(roundi(world_position.z / CELL_SIZE_M), 0), TERRAIN_CELLS)
+	)
+
+
+func _height_at_sample(sample_x: int, sample_z: int) -> float:
+	var x := mini(maxi(sample_x, 0), TERRAIN_CELLS)
+	var z := mini(maxi(sample_z, 0), TERRAIN_CELLS)
+	return _height_samples[_sample_index(x, z)]
+
+
+func _sample_index(sample_x: int, sample_z: int) -> int:
+	return sample_z * TERRAIN_SAMPLES + sample_x
+
+
+func _update_status(message: String, autosave_state: String = "") -> void:
+	var state := autosave_state
+	if state.is_empty():
+		state = "Dirty" if _dirty else "Idle"
+	_editor_shell.set_status(message, Vector2i.ZERO, state, _props_root.get_child_count())

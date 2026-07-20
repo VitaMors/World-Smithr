@@ -112,7 +112,6 @@ func _update_debug_material() -> void:
 	_debug_material = StandardMaterial3D.new()
 	_debug_material.albedo_color = _debug_colour_for_coord(coord)
 	_debug_material.roughness = 1.0
-	_debug_material.cull_mode = BaseMaterial3D.CULL_DISABLED
 
 
 func _debug_colour_for_coord(chunk_coord: Vector2i) -> Color:
@@ -159,7 +158,6 @@ func _update_debug_border() -> void:
 	mesh.add_surface_from_arrays(Mesh.PRIMITIVE_LINES, arrays)
 
 	var material := StandardMaterial3D.new()
-	material.shading_mode = BaseMaterial3D.SHADING_MODE_UNSHADED
 	material.albedo_color = Color(0.02, 0.03, 0.03, 0.9)
 
 	_border_lines = MeshInstance3D.new()

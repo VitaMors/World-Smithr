@@ -36,16 +36,16 @@ rotation = Vector3(-0.785398, -0.610865, 0)
 light_energy = 1.35
 
 [node name="EditorCameraRig" type="Node3D" parent="."]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 32, 0, 32)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 64, 0, 64)
 script = ExtResource("2")
 
 [node name="Pivot" type="Node3D" parent="EditorCameraRig"]
 
 [node name="Camera3D" type="Camera3D" parent="EditorCameraRig/Pivot"]
-transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 96)
+transform = Transform3D(1, 0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 120)
 current = true
 fov = 55.0
-far = 320.0
+far = 420.0
 
 [node name="ToolRaycaster" type="RayCast3D" parent="EditorCameraRig"]
 enabled = false

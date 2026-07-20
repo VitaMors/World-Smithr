@@ -108,5 +108,4 @@ func _create_default_material() -> StandardMaterial3D:
 	var material := StandardMaterial3D.new()
 	material.albedo_color = Color(0.34, 0.55, 0.32, 1.0)
 	material.roughness = 1.0
-	material.cull_mode = BaseMaterial3D.CULL_DISABLED
 	return material

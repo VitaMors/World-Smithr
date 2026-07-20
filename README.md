@@ -2,7 +2,7 @@
 
 World Smithr is a Godot 4 Web-first, low-poly 3D world-map editor. The starting blueprint used the working name "WorldSmith"; this project uses **World Smithr** for the product name and `world_smithr` for new save-format identifiers.
 
-This repository currently contains the first usable editor slice from the blueprint: a runnable Godot project shell, editor-style layout, orbit/pan/zoom camera rig, visible streamed terrain, seam-safe terrain sculpting, a 5x5 streamed chunk window, Active/Warm/Unloaded chunk states, cross-boundary Raise/Lower/Smooth/Flatten sculpting, click-to-place low-poly trees, selectable placed props, quick local save/open, debug chunk colours/labels/borders, and one-stroke undo/redo across affected chunks.
+This repository currently contains the first usable editor slice from the blueprint: a runnable Godot project shell, editor-style layout, orbit/pan/zoom camera rig, a visible editable 128m terrain board with starter hills, Raise/Lower/Smooth/Flatten sculpting, click-to-place low-poly trees, selectable placed props, terrain grid toggling, quick local save/open, and one-stroke terrain undo/redo.
 
 ## Requirements
 
@@ -32,31 +32,30 @@ res://main/main.tscn
 godot --headless --path . --script res://tests/smoke_test.gd
 ```
 
-The smoke test currently covers chunk coordinate conversion, canonical shared border samples, four-chunk corner ownership, terrain height storage, height snapshot serialization, terrain mesh generation, 5x5 streaming counts, cardinal/diagonal chunk-set diffs, negative chunk coordinates, and rebuild queue de-duping.
+The smoke test currently covers the chunk data model and streaming support code that will come back behind the direct editor surface: chunk coordinate conversion, canonical shared border samples, four-chunk corner ownership, terrain height storage, height snapshot serialization, terrain mesh generation, 5x5 streaming counts, cardinal/diagonal chunk-set diffs, negative chunk coordinates, and rebuild queue de-duping.
 
 ## Current Controls
 
 - `Sculpt` is selected by default.
-- Left mouse drag on active terrain: apply the selected sculpt brush.
-- Sculpt across chunk edges or four-way corners: shared global samples update all affected chunk meshes.
+- Left mouse drag on the visible terrain: apply the selected sculpt brush.
 - Sculpt modes: Raise, Lower, Smooth, Flatten.
 - Shift while dragging Raise or Lower: temporarily invert the direction.
 - Brush radius, strength, and falloff are in the right panel.
-- `Place`: click active terrain to drop a low-poly tree prop.
+- `Place`: click terrain to drop a low-poly tree prop.
 - `Select`: click a placed tree to show it in the selection summary.
-- `New`: reset the current in-memory world.
+- `New`: reset to the starter hill world.
 - `Save`: write a quick local snapshot to `user://worlds/world_smithr_quick_save.json`.
 - `Open`: load the quick local snapshot if one exists.
-- `Settings`: toggle chunk labels and borders.
-- Top bar `Undo` and `Redo`: replay whole sculpt strokes, including multi-chunk strokes.
+- `Settings`: toggle the terrain grid.
+- Top bar `Undo` and `Redo`: replay whole sculpt strokes.
 - Middle mouse drag: orbit.
-- Shift + middle mouse drag: pan. The editor camera pivot is the Build-mode streaming focus.
+- Shift + middle mouse drag: pan.
 - Mouse wheel: zoom.
-- F: frame the starter chunk.
+- F: frame the terrain board.
 - 1: angled perspective view.
 - 2: top orthographic view.
 
-## Streaming Model
+## Streaming Support
 
 - Active chunks: Chebyshev distance 0-1 from the focus, 9 chunks maximum, visible and collision-enabled.
 - Warm chunks: Chebyshev distance 2 from the focus, 16 chunks maximum, visible and collision-disabled.
@@ -73,7 +72,7 @@ Export with the preset named `Web`:
 godot --headless --path . --export-release Web dist/web/index.html
 ```
 
-Serve the generated `dist/web` directory from a local or hosted web server. Browser storage is expected to use Godot's `user://` path backed by IndexedDB; later phases will add explicit persistence warnings, import, and export controls.
+Serve the generated `dist/web` directory from a local or hosted web server. Browser storage is expected to use Godot's `user://` path backed by IndexedDB; a later build will add explicit persistence warnings, import, and export controls.
 
 ## Deploy With GitHub Pages
 
@@ -91,6 +90,6 @@ References:
 - Godot command line export: https://docs.godotengine.org/en/stable/tutorials/editor/command_line_tutorial.html
 - Godot Web export: https://docs.godotengine.org/en/stable/tutorials/export/exporting_for_web.html
 
-## Next Phase
+## Next Build Pass
 
-The next build pass should turn the quick local snapshot into full persistence: versioned world manifests, independent chunk records, delayed autosave, recovery snapshots, portable ZIP import/export, and persistence warnings. After that, the next visible usability jump is richer placement: prop palette, rotate/delete/move, paint, paths, and water.
+The next build pass should deepen the visible editor instead of hiding work behind infrastructure: prop palette, rotate/delete/move, paint, paths, water, then full persistence with versioned world manifests and portable ZIP import/export.
