@@ -310,12 +310,37 @@ func _select_option_by_text(options: OptionButton, text: String) -> void:
 
 
 func _on_action_pressed(action_name: String) -> void:
+	set_status("%s requested" % action_name, Vector2i.ZERO, "Idle", 0)
 	action_requested.emit(action_name)
 
 
 func _on_tool_pressed(tool_name: String) -> void:
 	set_active_tool(tool_name)
+	set_tool_hint(_fallback_hint_for_tool(tool_name))
+	set_status(_fallback_status_for_tool(tool_name), Vector2i.ZERO, "Idle", 0)
 	tool_selected.emit(tool_name)
+
+
+func _fallback_hint_for_tool(tool_name: String) -> String:
+	match tool_name:
+		"Sculpt":
+			return "Drag on terrain to shape it."
+		"Place":
+			return "Click terrain to place a low-poly tree."
+		"Select":
+			return "Click a placed tree to inspect it."
+	return "%s comes after the core builder." % tool_name
+
+
+func _fallback_status_for_tool(tool_name: String) -> String:
+	match tool_name:
+		"Sculpt":
+			return "Sculpt selected"
+		"Place":
+			return "Place selected"
+		"Select":
+			return "Select selected"
+	return "%s is not active yet" % tool_name
 
 
 func _on_sculpt_mode_item_selected(index: int) -> void:
