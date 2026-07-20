@@ -1,0 +1,8 @@
+.godot/
+.import/
+build/
+dist/
+.godot-ci/
+*.tmp
+*.log
+*.translation
